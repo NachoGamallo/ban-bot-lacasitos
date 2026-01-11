@@ -12,6 +12,8 @@ const {
 } = require('discord.js');
 
 const fs = require('fs');
+
+//CONFIG IN THE SERVER.
 const config = {
 
   token: process.env.DISCORD_TOKEN,
@@ -20,6 +22,7 @@ const config = {
   adminRoleId: process.env.ADMIN_ROLE_ID
 
 }
+
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
