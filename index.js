@@ -35,6 +35,21 @@ function saveReport(report) {
   fs.writeFileSync('./reports.json', JSON.stringify(data, null, 2));
 }
 
+function canSubmitReport(userID){
+
+  const data = JSON.parse(fs.readFileSync('./reports.json'));
+  const now = Date.now();
+  const cooldown = 24*60*60*1000;
+  const lastReport = data
+    .filter(r => r.reporter.id === userID)
+    .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+
+  if (!lastReport) return true;
+
+  return now - new Date(lastReport.timestamp).getTime() > cooldown;
+
+}
+
 client.once('ready', async () => {
   console.log(`🟢 Conectado como ${client.user.tag}`);
 
@@ -49,7 +64,10 @@ client.once('ready', async () => {
   );
 
   await channel.send({
-    content: 'Pulsa el botón para enviar una **petición de ban**.\nTu identidad solo será visible para admins.',
+    content: 
+      'Pulsa el botón para enviar una **petición de ban**.\n' +
+      '⏳ Máximo **1 petición cada 24h**.\n' +
+      '🔒 Tu identidad solo será visible para admins.',
     components: [row]
   });
 });
@@ -91,6 +109,16 @@ client.on('interactionCreate', async interaction => {
 
   // ENVÍO DEL MODAL
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId === 'ban_modal') {
+
+    if (!canSubmitReport(interaction.user.id)){
+
+      return interaction.reply({
+        content: '⏳ Ya has enviado una petición de ban en las últimas **24 horas**.',
+        ephemeral: true
+      });
+
+    }
+
     const report = {
       id: Date.now(),
       target: interaction.fields.getTextInputValue('target'),
@@ -100,7 +128,11 @@ client.on('interactionCreate', async interaction => {
         id: interaction.user.id,
         tag: interaction.user.tag
       },
-      status: 'Pendiente',
+      status: 'En votacion...',
+      votes: {
+        approve: [],
+        reject: []
+      },
       timestamp: new Date().toISOString()
     };
 
@@ -114,19 +146,19 @@ client.on('interactionCreate', async interaction => {
         { name: 'Motivo', value: report.reason },
         { name: 'Pruebas', value: report.proof },
         { name: 'Reportado por', value: `${report.reporter.tag} (${report.reporter.id})` },
-        { name: 'Estado', value: report.status }
+        { name: 'Estado', value: 'En votacion \n👍 0 | 👎 0'}
       )
       .setTimestamp();
 
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`approve_${report.id}`)
-        .setLabel('✅ Aprobar')
+       new ButtonBuilder()
+        .setCustomId(`vote_yes_${report.id}`)
+        .setLabel('👍 A favor')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`reject_${report.id}`)
-        .setLabel('❌ Rechazar')
-        .setStyle(ButtonStyle.Secondary)
+        .setCustomId(`vote_no_${report.id}`)
+        .setLabel('👎 En contra')
+        .setStyle(ButtonStyle.Danger)
     );
 
     const logChannel = await client.channels.fetch(config.logChannelId);
@@ -142,40 +174,74 @@ client.on('interactionCreate', async interaction => {
     } catch {}
   }
 
-  // BOTONES ADMIN
   if (
     interaction.isButton() &&
-    (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_'))
+    (interaction.customId.startsWith('vote_yes_') || interaction.customId.startsWith('vote_no_'))
   ) {
+    if (!interaction.member.roles.cache.has(config.adminRoleId)) {
+      return interaction.reply({
+        content: '❌ Solo admins pueden votar.',
+        ephemeral: true
+      });
+    }
 
-    if (!interaction.member.roles.cache.has(config.adminRoleId))
-      return interaction.reply({ content: '❌ No tienes permisos.', ephemeral: true });
-
-    const id = interaction.customId.split('_')[1];
+    const reportId = interaction.customId.split('_')[2];
     const data = JSON.parse(fs.readFileSync('./reports.json'));
-    const report = data.find(r => r.id == id);
+    const report = data.find(r => r.id == reportId);
 
-    if (!report)
+    if (!report) {
       return interaction.reply({ content: 'Reporte no encontrado.', ephemeral: true });
+    }
 
-    report.status = interaction.customId.startsWith('approve')
-      ? 'Aprobado'
-      : 'Rechazado';
+    // 🔄 Quitar voto previo
+    report.votes.approve = report.votes.approve.filter(id => id !== interaction.user.id);
+    report.votes.reject = report.votes.reject.filter(id => id !== interaction.user.id);
+
+    // ➕ Añadir voto
+    if (interaction.customId.startsWith('vote_yes')) {
+      report.votes.approve.push(interaction.user.id);
+    } else {
+      report.votes.reject.push(interaction.user.id);
+    }
+
+    // 👥 Contar admins y mayoría
+    const adminRole = interaction.guild.roles.cache.get(config.adminRoleId);
+    const totalAdmins = adminRole.members.size;
+    const majority = Math.ceil(totalAdmins / 2);
+
+    // 🏁 Decisión final
+    if (report.votes.approve.length >= majority) {
+      report.status = 'Aprobado por votación';
+    }
+    if (report.votes.reject.length >= majority) {
+      report.status = 'Rechazado por votación';
+    }
 
     fs.writeFileSync('./reports.json', JSON.stringify(data, null, 2));
 
     const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
-      .spliceFields(4, 1, { name: 'Estado', value: report.status });
+      .spliceFields(4, 1, {
+        name: 'Estado',
+        value:
+          `${report.status}\n` +
+          `👍 ${report.votes.approve.length} | 👎 ${report.votes.reject.length}`
+      });
 
     await interaction.update({
       embeds: [updatedEmbed],
-      components: []
+      components:
+        report.status.includes('Aprobado') || report.status.includes('Rechazado')
+          ? []
+          : interaction.message.components
     });
 
-    try {
-      const user = await client.users.fetch(report.reporter.id);
-      await user.send(`📢 Tu petición de ban fue **${report.status}**.`);
-    } catch {}
+    // 📩 Avisar al denunciante al finalizar
+    if (report.status !== 'En votación') {
+      try {
+        const user = await client.users.fetch(report.reporter.id);
+        await user.send(`📢 Tu petición de ban fue **${report.status}**.`);
+      } catch {}
+    }
   }
 });
 
