@@ -12,7 +12,14 @@ const {
 } = require('discord.js');
 
 const fs = require('fs');
-const config = require('./config.json');
+const config = {
+
+  token: process.env.DISCORD_TOKEN,
+  panelChannelId: process.env.PANEL_CHANNEL_ID,
+  logChannelId: process.env.LOG_CHANNEL_ID,
+  adminRoleId: process.env.ADMIN_ROLE_ID
+
+}
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
